@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════════════
-//  CLAUDE VISION SCALP BOT v3 — XAU/USD
+//  CLAUDE VISION SCALP BOT v4 — XAU/USD
 //  Fetches candle data from TwelveData
 //  Builds chart via quickchart.io POST (fixes 400 error)
 //  Sends image to Claude Vision API
@@ -193,31 +193,49 @@ function buildSummary(candles) {
 
 // ── Claude Vision call ───────────────────────────────────
 async function callClaude(state, imageBase64, summary) {
-  const system = `You are an expert XAU/USD scalp trader. Every 5 minutes you get a live chart image (Close=white, High=green, Low=red, EMA21=yellow, EMA50=orange) plus key stats.
+  const system = `You are an expert XAU/USD scalp trader acting as a live signal provider. Every 5 minutes you get a live chart image (Close=white, High=green, Low=red, EMA21=yellow, EMA50=orange) plus real-time stats.
 
-Analyze like a professional ICT trader:
-- Trend from EMAs and structure
-- Key levels: swing highs/lows, support/resistance
-- Momentum: speed of moves, candle patterns
-- Liquidity sweeps followed by structure breaks
-- Factor previous signals from conversation history
-- Only signal on HIGH confluence
-- LIMIT entry preferred (better price than current)
-- TP/SL from actual structure levels
-- Max 3 signals per day
+Your job is to identify HIGH confluence setups and provide PRECISE limit orders. Think like an ICT/Smart Money trader.
 
-ALWAYS respond in EXACTLY this format:
-SIGNAL: [BUY / SELL / WAIT]
-ENTRY: [price]
-TP1: [price]
-TP2: [price]
-SL: [price]
-REASON: [2-3 sentences]
+ANALYSIS:
+- Trend: EMA21 vs EMA50, structure of highs/lows
+- Nearest swing high and swing low
+- Liquidity sweep: wick beyond a level that closed back?
+- Break of structure (BOS) or change of character (CHoCH)?
+- Order block: last opposing candle before a big move
+- RSI: overbought/oversold?
+- Risk:reward minimum 1:2
+
+ENTRY RULES:
+- BUY LIMIT: place BELOW current price at demand zone / OB / swept low
+- SELL LIMIT: place ABOVE current price at supply zone / OB / swept high  
+- Never chase price — always wait for it to come to you
+- No clean setup = WAIT
+
+SL RULES:
+- BUY SL: below the swing low or OB that was swept
+- SELL SL: above the swing high or OB that was swept
+- SL must be beyond structure, not arbitrary pips
+
+TP RULES:
+- TP1: nearest opposing structure (quick partial)
+- TP2: next major level (let runners go)
+
+MEMORY: Remember all signals this session. If last signal still active, say so and WAIT unless stronger setup appears. Max 3 signals per day.
+
+ALWAYS respond in EXACTLY this format — no extra text:
+SIGNAL: [BUY LIMIT / SELL LIMIT / WAIT]
+ENTRY: [exact price]
+TP1: [exact price]
+TP2: [exact price]
+SL: [exact price]
+RR: [e.g. 1:2.5]
+REASON: [3-4 sentences — trend, structure, entry logic, key level]
 CONFIDENCE: [LOW / MEDIUM / HIGH]
 
 If WAIT:
 SIGNAL: WAIT
-REASON: [what you are waiting for]`;
+REASON: [exactly what you are waiting for and at what price level]`;
 
   const messages = [
     ...state.history.map(h => ({ role: h.role, content: h.content })),
@@ -258,28 +276,32 @@ async function sendTelegram(text) {
 
 // ── Format signal ────────────────────────────────────────
 function formatSignal(r) {
+  // normalize signal text
+  r = r.replace("BUY LIMIT", "BUY LIMIT").replace("SELL LIMIT", "SELL LIMIT");
   if (r.includes("SIGNAL: WAIT")) {
     const reason = r.match(/REASON:\s*([^\n]+)/)?.[1] || "";
     return { isWait: true, text: `⏳ <b>XAUUSD WAIT</b>\n📝 ${reason}\n\n⚠️ Not financial advice` };
   }
-  const sig  = r.match(/SIGNAL:\s*(BUY|SELL)/)?.[1]  || "?";
+  const sigFull = r.match(/SIGNAL:\s*(BUY LIMIT|SELL LIMIT|BUY|SELL)/)?.[1] || "?";
+  const sig  = sigFull;
   const ent  = r.match(/ENTRY:\s*([^\n]+)/)?.[1]      || "?";
   const tp1  = r.match(/TP1:\s*([^\n]+)/)?.[1]        || "?";
   const tp2  = r.match(/TP2:\s*([^\n]+)/)?.[1]        || "?";
   const sl   = r.match(/SL:\s*([^\n]+)/)?.[1]         || "?";
   const rsn  = r.match(/REASON:\s*([^\n]+)/)?.[1]     || "?";
+  const rr   = r.match(/RR:\s*([^\n]+)/)?.[1]         || "?";
   const conf = r.match(/CONFIDENCE:\s*([^\n]+)/)?.[1] || "?";
-  const e    = sig === "BUY" ? "🟢" : "🔴";
+  const e    = sig.includes("BUY") ? "🟢" : "🔴";
   const ce   = conf === "HIGH" ? "🔥" : conf === "MEDIUM" ? "⚡" : "⚠️";
   return {
     isWait: false, signal: sig,
-    text: `${e} <b>XAUUSD ${sig}</b>\n🕐 ${new Date().toUTCString()}\n━━━━━━━━━━━━━━━\n🎯 Entry : <b>${ent}</b>\n✅ TP1   : <b>${tp1}</b>\n✅ TP2   : <b>${tp2}</b>\n❌ SL    : <b>${sl}</b>\n━━━━━━━━━━━━━━━\n${ce} Confidence: <b>${conf}</b>\n📝 ${rsn}\n\n⚠️ Not financial advice`
+    text: `${e} <b>XAUUSD ${sig}</b>\n🕐 ${new Date().toUTCString()}\n━━━━━━━━━━━━━━━\n🎯 Entry : <b>${ent}</b>\n✅ TP1   : <b>${tp1}</b>\n✅ TP2   : <b>${tp2}</b>\n❌ SL    : <b>${sl}</b>\n📊 R:R   : <b>${rr}</b>\n━━━━━━━━━━━━━━━\n${ce} Confidence: <b>${conf}</b>\n📝 ${rsn}\n\n⚠️ Not financial advice`
   };
 }
 
 // ── Main ─────────────────────────────────────────────────
 async function main() {
-  console.log(`\n[${new Date().toISOString()}] Claude Vision Bot v3 starting...`);
+  console.log(`\n[${new Date().toISOString()}] Claude Vision Bot v4 starting...`);
   const state = loadState();
 
   const today = new Date().toISOString().slice(0, 10);
